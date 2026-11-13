@@ -3,7 +3,10 @@ extends Node2D
 const WORLD_SIZE := 64
 const TILE_W := 128.0
 const TILE_H := 64.0
+const TILE_METERS := 50.0
+const HEIGHT_PIXELS_PER_METER := 1.8
 const HAB := Vector2i(32, 32)
+const ELEVATION_MAP_PATH := "res://assets/outpost_zero/terrain/jezero_elevation_m.csv"
 
 var terrain_atlas: Texture2D
 var buildings_atlas: Texture2D
@@ -13,6 +16,8 @@ var building_frames: Dictionary
 var rover_frames: Dictionary
 var camera: Camera2D
 var world_modulate: CanvasModulate
+var terrain_elevations: PackedFloat32Array = PackedFloat32Array()
+var base_elevation_m: float = 0.0
 var dragging := false
 var drag_origin := Vector2.ZERO
 var _tex_cache := {}
@@ -29,6 +34,7 @@ func _ready() -> void:
 	terrain_frames = _read_frames("res://assets/outpost_zero/terrain/terrain_atlas.json")
 	building_frames = _read_frames("res://assets/outpost_zero/buildings/buildings_atlas.json")
 	rover_frames = _read_frames("res://assets/outpost_zero/vehicles/rover_atlas.json")
+	_load_elevation_map()
 	_build_world()
 	_build_colony()
 	_add_rover()
@@ -59,6 +65,68 @@ func set_time_of_day(hour: float) -> void:
 			return
 	world_modulate.color = key_colors[0]
 
+func _load_elevation_map() -> void:
+	terrain_elevations.resize(WORLD_SIZE * WORLD_SIZE)
+	terrain_elevations.fill(0.0)
+	var file: FileAccess = FileAccess.open(ELEVATION_MAP_PATH, FileAccess.READ)
+	if file == null:
+		push_warning("Jezero elevation map is missing; using level terrain.")
+		return
+	var row_index: int = 0
+	while not file.eof_reached() and row_index < WORLD_SIZE:
+		var line: String = file.get_line().strip_edges()
+		if line.is_empty():
+			continue
+		var values: PackedStringArray = line.split(",")
+		if values.size() != WORLD_SIZE:
+			push_warning("Jezero elevation row %d has an invalid tile count." % row_index)
+			continue
+		for gx in range(WORLD_SIZE):
+			terrain_elevations[row_index * WORLD_SIZE + gx] = float(values[gx])
+		row_index += 1
+	if row_index != WORLD_SIZE:
+		push_warning("Jezero elevation map has %d of %d rows; remaining terrain will be level." % [row_index, WORLD_SIZE])
+	base_elevation_m = _elevation_at(HAB.x, HAB.y)
+
+func _elevation_at(gx: int, gy: int) -> float:
+	if terrain_elevations.size() != WORLD_SIZE * WORLD_SIZE:
+		return 0.0
+	var safe_x: int = clampi(gx, 0, WORLD_SIZE - 1)
+	var safe_y: int = clampi(gy, 0, WORLD_SIZE - 1)
+	return float(terrain_elevations[safe_y * WORLD_SIZE + safe_x])
+
+func _height_offset_px(gx: int, gy: int) -> float:
+	return (_elevation_at(gx, gy) - base_elevation_m) * HEIGHT_PIXELS_PER_METER
+
+func _terrain_slope(gx: int, gy: int) -> float:
+	var west_x: int = maxi(0, gx - 1)
+	var east_x: int = mini(WORLD_SIZE - 1, gx + 1)
+	var north_y: int = maxi(0, gy - 1)
+	var south_y: int = mini(WORLD_SIZE - 1, gy + 1)
+	var east_run: float = maxf(1.0, float(east_x - west_x) * TILE_METERS)
+	var north_run: float = maxf(1.0, float(south_y - north_y) * TILE_METERS)
+	var slope_x: float = (_elevation_at(east_x, gy) - _elevation_at(west_x, gy)) / east_run
+	var slope_y: float = (_elevation_at(gx, south_y) - _elevation_at(gx, north_y)) / north_run
+	return sqrt(slope_x * slope_x + slope_y * slope_y)
+
+func _local_roughness(gx: int, gy: int) -> float:
+	var neighbor_total: float = 0.0
+	var neighbor_count: int = 0
+	for offset_y in range(-1, 2):
+		for offset_x in range(-1, 2):
+			if offset_x == 0 and offset_y == 0:
+				continue
+			var sample_x: int = gx + offset_x
+			var sample_y: int = gy + offset_y
+			if sample_x < 0 or sample_x >= WORLD_SIZE or sample_y < 0 or sample_y >= WORLD_SIZE:
+				continue
+			neighbor_total += _elevation_at(sample_x, sample_y)
+			neighbor_count += 1
+	if neighbor_count == 0:
+		return 0.0
+	var neighbor_mean: float = neighbor_total / float(neighbor_count)
+	return absf(_elevation_at(gx, gy) - neighbor_mean)
+
 func _read_frames(path: String) -> Dictionary:
 	var parsed = JSON.parse_string(FileAccess.get_file_as_string(path))
 	return parsed.get("frames", {}) if parsed is Dictionary else {}
@@ -84,29 +152,19 @@ func _tile_hash(gx: int, gy: int) -> int:
 	return abs((gx * 73856093) ^ (gy * 19349663)) % 100
 
 func _terrain_type(gx: int, gy: int) -> String:
-	var dist := Vector2(gx - HAB.x, gy - HAB.y).length()
-	if dist <= 5.2:
-		return "rocky_plains" if (gx + gy) % 3 == 0 else "sand_dust"
-	var river_y := roundi(18.0 + gx * 0.45 + sin((gx + 101) * 0.22) * 4.5)
-	if abs(gy - river_y) <= 1.8:
-		return "river_channel"
-	var tributary_x := roundi(42.0 - gy * 0.35 + cos(gy * 0.25) * 3.5)
-	if gy < 34 and abs(gx - tributary_x) <= 1.4:
-		return "river_channel"
-	for crater in [Vector3(16, 20, 4.2), Vector3(48, 16, 5.0), Vector3(18, 48, 4.5), Vector3(50, 46, 4.0), Vector3(10, 34, 3.2)]:
-		var d := Vector2(gx - crater.x, gy - crater.y).length()
-		if d < crater.z - 1.1:
-			return "crater_floor"
-		if d <= crater.z + 0.4:
-			return "rocky_hills"
-	if (gy == 23 and gx >= 22 and gx <= 39 and gx != 28 and gx != 29 and gx != 35) or (gx == 43 and gy >= 25 and gy <= 41 and gy != 31 and gy != 32 and gy != 38) or (gx == 21 and gy >= 26 and gy <= 40 and gy != 30 and gy != 31 and gy != 36) or (gy == 44 and gx >= 25 and gx <= 41 and gx != 32 and gx != 33):
+	var slope: float = _terrain_slope(gx, gy)
+	var roughness: float = _local_roughness(gx, gy)
+	var tile_noise: int = _tile_hash(gx, gy)
+	if slope >= 0.12:
 		return "cliff_ridge"
-	var h: float = absf(sin(gx * 12.9898 + gy * 78.233 + 101.0) * 43758.5453)
-	var frac: float = h - floorf(h)
-	if frac > 0.88: return "boulder_field"
-	if frac > 0.76: return "rocky_hills"
-	if frac > 0.64: return "geological_outcrop"
-	if frac > 0.36: return "rocky_plains"
+	if slope >= 0.085:
+		return "rocky_hills"
+	if roughness >= 1.8:
+		return "geological_outcrop"
+	if slope >= 0.045 and tile_noise >= 88:
+		return "boulder_field"
+	if slope >= 0.055 or (roughness >= 0.8 and tile_noise >= 65):
+		return "rocky_plains"
 	return "sand_dust"
 
 func _terrain_frame(kind: String, gx: int, gy: int) -> String:
@@ -139,7 +197,48 @@ func _build_world() -> void:
 	for gx in WORLD_SIZE:
 		for gy in WORLD_SIZE:
 			var iso := _grid_to_iso(gx, gy)
-			_add_atlas_sprite(ground, terrain_atlas, terrain_frames, _terrain_frame(_terrain_type(gx, gy), gx, gy), iso, 10 + gx + gy)
+			var depth: int = 10 + gx + gy
+			var height_offset: float = _height_offset_px(gx, gy)
+			_add_relief_faces(ground, gx, gy, iso, height_offset, depth)
+			_add_atlas_sprite(ground, terrain_atlas, terrain_frames, _terrain_frame(_terrain_type(gx, gy), gx, gy), iso - Vector2(0.0, height_offset), depth)
+
+func _add_relief_faces(parent: Node2D, gx: int, gy: int, iso: Vector2, height_offset: float, depth: int) -> void:
+	var current_elevation: float = _elevation_at(gx, gy)
+	if gx + 1 < WORLD_SIZE:
+		var east_elevation: float = _elevation_at(gx + 1, gy)
+		if not is_equal_approx(current_elevation, east_elevation):
+			var east_offset: float = _height_offset_px(gx + 1, gy)
+			var east_top: float = maxf(height_offset, east_offset)
+			var east_bottom: float = minf(height_offset, east_offset)
+			var east_depth: int = depth if current_elevation > east_elevation else depth + 1
+			var east_face := PackedVector2Array([
+				Vector2(iso.x + TILE_W * 0.5, iso.y - east_top),
+				Vector2(iso.x, iso.y + TILE_H * 0.5 - east_top),
+				Vector2(iso.x, iso.y + TILE_H * 0.5 - east_bottom),
+				Vector2(iso.x + TILE_W * 0.5, iso.y - east_bottom),
+			])
+			_add_relief_face(parent, east_face, east_depth, Color(0.37, 0.16, 0.10))
+	if gy + 1 < WORLD_SIZE:
+		var south_elevation: float = _elevation_at(gx, gy + 1)
+		if not is_equal_approx(current_elevation, south_elevation):
+			var south_offset: float = _height_offset_px(gx, gy + 1)
+			var south_top: float = maxf(height_offset, south_offset)
+			var south_bottom: float = minf(height_offset, south_offset)
+			var south_depth: int = depth if current_elevation > south_elevation else depth + 1
+			var south_face := PackedVector2Array([
+				Vector2(iso.x - TILE_W * 0.5, iso.y - south_top),
+				Vector2(iso.x, iso.y + TILE_H * 0.5 - south_top),
+				Vector2(iso.x, iso.y + TILE_H * 0.5 - south_bottom),
+				Vector2(iso.x - TILE_W * 0.5, iso.y - south_bottom),
+			])
+			_add_relief_face(parent, south_face, south_depth, Color(0.46, 0.21, 0.12))
+
+func _add_relief_face(parent: Node2D, points: PackedVector2Array, depth: int, face_color: Color) -> void:
+	var face := Polygon2D.new()
+	face.polygon = points
+	face.color = face_color
+	face.z_index = depth
+	parent.add_child(face)
 
 func _build_colony() -> void:
 	var buildings := [
@@ -153,17 +252,21 @@ func _build_colony() -> void:
 		["repair_workshop_lvl1", 35, 35, "VULCAN ROVER GARAGE"],
 	]
 	for item in buildings:
-		var pos := _grid_to_iso(item[1], item[2])
+		var tile_x: int = int(item[1])
+		var tile_y: int = int(item[2])
+		var pos := _grid_to_iso(tile_x, tile_y) - Vector2(0.0, _height_offset_px(tile_x, tile_y))
 		var sprite := _add_atlas_sprite(self, buildings_atlas, building_frames, item[0], pos + Vector2(0, -26), 300 + roundi(pos.y))
 		sprite.name = item[3].to_lower().replace(" ", "_")
 		_add_label(item[3], pos + Vector2(0, 39), 300 + roundi(pos.y) + 1, Color("dce5eb"))
 	# Auxiliary modules from the Phaser colony layout.
 	for item in [["habitat_airlock", 33, 32], ["oxygen_generator", 37, 32], ["battery_storage", 28, 34], ["hydroponic_beds", 35, 29]]:
-		var pos := _grid_to_iso(item[1], item[2])
+		var tile_x: int = int(item[1])
+		var tile_y: int = int(item[2])
+		var pos := _grid_to_iso(tile_x, tile_y) - Vector2(0.0, _height_offset_px(tile_x, tile_y))
 		_add_atlas_sprite(self, buildings_atlas, building_frames, item[0], pos + Vector2(0, -22), 300 + roundi(pos.y), 0.86)
 
 func _add_rover() -> void:
-	var pos := _grid_to_iso(34, 31)
+	var pos := _grid_to_iso(34, 31) - Vector2(0.0, _height_offset_px(34, 31))
 	var rover := _add_atlas_sprite(self, rover_atlas, rover_frames, "rover_scan_0", pos + Vector2(0, -10), 300 + roundi(pos.y) + 2)
 	rover.name = "Nomad-1 Rover"
 	_add_label("NOMAD-1 (100%)", pos + Vector2(0, 28), 300 + roundi(pos.y) + 3, Color("ffc857"))
