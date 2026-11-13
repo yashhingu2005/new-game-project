@@ -313,6 +313,8 @@ static func tick(state: MissionState, actions: Array[Dictionary] = [], rng: Rand
 		changes.append({"cause": "battery_reserve", "detail": "Battery reached reserve; connected buildings entered low-power fault"})
 	else:
 		next.flags["reserve_fault"] = false
+		for building: Dictionary in next.buildings:
+			building["low_power_fault"] = false
 	var dust_per_sol := Hazards.panel_dust_rate(active_weather, t)
 	if state.hour == 23:
 		for panel: Dictionary in next.solar_arrays:
@@ -322,17 +324,60 @@ static func tick(state: MissionState, actions: Array[Dictionary] = [], rng: Rand
 				changes.append({"cause": "dust_devil", "detail": "Dust devil cleaned a panel"})
 			changes.append({"cause": "dust", "detail": "Panel dust increased by %.3f" % dust_per_sol})
 	var powered_ratio := 1.0 if demand <= 0.0 else clampf((generation + total_charge - after_charge) / demand, 0.0, 1.0)
-	# Preserve the legacy daily consumption coupling while allocating power hourly.
-	next.air = maxf(0.0, next.air - 0.15 * powered_ratio / 24.0)
-	next.water = maxf(0.0, next.water - 0.2 * powered_ratio / 24.0)
-	next.food = maxf(0.0, next.food - 0.18 / 24.0)
+	# Resource rates are distributed across the 24 hourly simulation steps.
+	next.air = maxf(0.0, next.air - float(t["air_per_sol"]) * powered_ratio / 24.0)
+	next.water = maxf(0.0, next.water - float(t["water_per_sol"]) * powered_ratio / 24.0)
+	next.food = maxf(0.0, next.food - float(t["food_per_sol"]) / 24.0)
+	var food_produced := 0.0
+	var air_produced := 0.0
+	var water_produced := 0.0
+	var materials_produced := 0.0
+	var powered_buildings: Array[String] = grid["powered_buildings"]
+	for building: Dictionary in next.buildings:
+		if not bool(building.get("work_enabled", true)) or not powered_buildings.has(str(building.get("id", ""))):
+			continue
+		match str(building.get("type", building.get("id", ""))):
+			"greenhouse":
+				food_produced += float(t["greenhouse_food_per_sol"]) / 24.0
+			"oxygen_generator":
+				air_produced += float(t["oxygen_generator_air_per_sol"]) / 24.0
+			"water_recycler":
+				water_produced += float(t["water_recycler_water_per_sol"]) / 24.0
+			"workshop":
+				materials_produced += float(t["workshop_materials_per_sol"]) / 24.0
+	next.food = minf(float(t["food_capacity"]), next.food + food_produced)
+	next.air = minf(float(t["air_capacity"]), next.air + air_produced)
+	next.water = minf(float(t["water_capacity"]), next.water + water_produced)
+	next.materials += materials_produced
+	if state.hour == 23:
+		if food_produced > 0.0: changes.append({"cause": "production", "detail": "Food +%.2f: greenhouse" % float(t["greenhouse_food_per_sol"])} )
+		if air_produced > 0.0: changes.append({"cause": "production", "detail": "Air +%.2f: oxygen generator" % float(t["oxygen_generator_air_per_sol"])} )
+		if water_produced > 0.0: changes.append({"cause": "production", "detail": "Water +%.2f: water recycler" % float(t["water_recycler_water_per_sol"])} )
+		if materials_produced > 0.0: changes.append({"cause": "production", "detail": "Materials +%.0f: workshop" % float(t["workshop_materials_per_sol"])} )
+	var low_fraction := float(t["store_warning_fraction"])
+	for key: String in ["air", "water", "food"]:
+		var current_store := _resource(next, key)
+		var store_capacity := float(t["%s_capacity" % key])
+		var warning_flag := "low_store_warning_%s" % key
+		if current_store > store_capacity * low_fraction:
+			next.flags.erase(warning_flag)
+		elif not bool(next.flags.get(warning_flag, false)):
+			next.flags[warning_flag] = true
+			changes.append({"cause": "store_warning", "detail": "%s is below 25%%" % key.capitalize()})
+	if not bool(next.flags.get("mission_failed", false)):
+		for key: String in ["air", "water", "food"]:
+			if _resource(next, key) <= 0.0:
+				next.flags["mission_failed"] = true
+				next.flags["failure_cause"] = key
+				changes.append({"cause": "mission_failed", "detail": "The %s store ran out." % key})
+				break
 	next.dose += float(t.get("dose_per_sol_msv", 0.0)) / 24.0
 	next.hour += 1
 	if next.hour >= 24:
 		next.hour = 0
 		next.sol += 1
 		next.crew_hours = 12.0
-		for building: Dictionary in next.buildings: building["work_enabled"] = true
+		for building: Dictionary in next.buildings: building["work_enabled"] = not bool(building.get("manual_off", false))
 		var next_weather := Hazards.weather_for_sol(next)
 		next.flags["sky_dust_factor"] = 1.0 - float(next_weather.get("storm_light_factor", 1.0))
 		Hazards.process_sol_start(next, changes)
@@ -340,7 +385,10 @@ static func tick(state: MissionState, actions: Array[Dictionary] = [], rng: Rand
 		var cargo_was_landed := bool(comms_before.get("cargo_landed", false))
 		var delivered: Array = load("res://simulation/communications_system.gd").process_sol(next)
 		for message: Dictionary in delivered:
-			changes.append({"cause": "earth_reply", "detail": "Earth replied about %s" % str(message.get("item", "your request"))})
+			if str(message.get("cause", "")) == "cargo_landing":
+				changes.append(message)
+			else:
+				changes.append({"cause": "earth_reply", "detail": "Earth replied about %s" % str(message.get("item", "your request"))})
 		var comms_after: Dictionary = next.flags.get("communications", {})
 		if not cargo_was_landed and bool(comms_after.get("cargo_landed", false)):
 			changes.append({"cause": "cargo_landing", "detail": "The scheduled cargo manifest landed on Sol %d" % next.sol})
@@ -390,7 +438,8 @@ static func _apply_action(state: MissionState, action_data: Dictionary) -> Dicti
 	var changes: Array[Dictionary] = []
 	if str(action_data.get("type", "")) == "research_start" and not str(action_data.get("reason", "")).is_empty():
 		return {"ok": false, "reason": str(action_data["reason"]), "changes": changes}
-	if total_cost(action_data) <= 0.0: return {"ok": false, "reason": "zero-cost action", "changes": changes}
+	if total_cost(action_data) <= 0.0 and str(action_data.get("type", "")) != "event_choice":
+		return {"ok": false, "reason": "zero-cost action", "changes": changes}
 	var cost: Dictionary = action_data.get("cost", {})
 	if str(action_data.get("type", "")) == "move_building":
 		var move_target_found := false
@@ -448,6 +497,13 @@ static func _apply_action(state: MissionState, action_data: Dictionary) -> Dicti
 		"clean_panels":
 			for panel: Dictionary in state.solar_arrays: panel["dust"] = 0.0
 			changes.append({"cause": "action", "detail": "Cleaned solar panels"})
+		"toggle_work":
+			for building: Dictionary in state.buildings:
+				if str(building.get("id", "")) == str(action_data.get("target_id", "")) and not bool(building.get("life_support", false)):
+					var turning_off := bool(building.get("work_enabled", true))
+					building["work_enabled"] = not turning_off
+					building["manual_off"] = turning_off
+			changes.append({"cause": "action", "detail": "Toggled work at %s" % action_data.get("target_id", "")})
 		"repair_building":
 			for building: Dictionary in state.buildings:
 				if str(building.get("id", "")) == str(action_data.get("target_id", "")):
@@ -485,7 +541,7 @@ static func _apply_action(state: MissionState, action_data: Dictionary) -> Dicti
 				if str(rover.get("id", "")) == str(action_data.get("target_id", "")):
 					rover["mission_target"] = action_data.get("tile", rover.get("tile", Vector2i.ZERO))
 					rover["status"] = "dispatched"
-			changes.append({"cause": "action", "detail": "Dispatched rover %s; its existing world movement controller handles travel" % action_data.get("target_id", "")})
+			changes.append({"cause": "action", "detail": "Dispatched rover %s toward the selected tile" % action_data.get("target_id", "")})
 		"rover_recover":
 			for rover: Dictionary in state.rovers:
 				if str(rover.get("id", "")) == str(action_data.get("target_id", "")):
@@ -563,7 +619,7 @@ static func _building_load(building: Dictionary, night: bool, tuning: Dictionary
 		var level := maxi(0, int(building.get("insulation", 0)))
 		var reduction := minf(float(tuning["max_insulation_reduction"]), level * float(tuning["insulation_reduction_per_level"]))
 		building_load += float(building.get("heater_load", 0.0)) * (1.0 - reduction)
-	return building_load
+	return building_load * float(tuning.get("load_scale", 1.0))
 
 static func _distance(a: Variant, b: Variant) -> float:
 	var av := Vector2(float(a.x), float(a.y)) if a is Vector2i or a is Vector2 else Vector2.ZERO

@@ -12,10 +12,17 @@ var terrain_frames: Dictionary
 var building_frames: Dictionary
 var rover_frames: Dictionary
 var camera: Camera2D
+var world_modulate: CanvasModulate
 var dragging := false
 var drag_origin := Vector2.ZERO
+var _tex_cache := {}
+
 
 func _ready() -> void:
+	world_modulate = CanvasModulate.new()
+	world_modulate.name = "Day Night Lighting"
+	add_child(world_modulate)
+	set_time_of_day(12.0)
 	terrain_atlas = load("res://assets/outpost_zero/terrain/terrain_atlas.png")
 	buildings_atlas = load("res://assets/outpost_zero/buildings/buildings_atlas.png")
 	rover_atlas = load("res://assets/outpost_zero/vehicles/rover_spritesheet.png")
@@ -27,6 +34,31 @@ func _ready() -> void:
 	_add_rover()
 	_setup_camera()
 
+func set_time_of_day(hour: float) -> void:
+	if world_modulate == null:
+		return
+	var key_hours: Array[float] = [0.0, 5.0, 6.0, 8.0, 12.0, 16.0, 18.0, 19.5, 21.0, 24.0]
+	var key_colors: Array[Color] = [
+		Color(0.30, 0.34, 0.56),
+		Color(0.30, 0.34, 0.56),
+		Color(0.95, 0.62, 0.50),
+		Color(1.0, 0.86, 0.75),
+		Color(1.0, 1.0, 1.0),
+		Color(1.0, 0.92, 0.82),
+		Color(1.0, 0.54, 0.40),
+		Color(0.45, 0.38, 0.60),
+		Color(0.30, 0.34, 0.56),
+		Color(0.30, 0.34, 0.56),
+	]
+	var normalized_hour: float = fposmod(hour, 24.0)
+	for index in range(key_hours.size() - 1):
+		if normalized_hour <= key_hours[index + 1]:
+			var span: float = key_hours[index + 1] - key_hours[index]
+			var weight: float = (normalized_hour - key_hours[index]) / span
+			world_modulate.color = key_colors[index].lerp(key_colors[index + 1], weight)
+			return
+	world_modulate.color = key_colors[0]
+
 func _read_frames(path: String) -> Dictionary:
 	var parsed = JSON.parse_string(FileAccess.get_file_as_string(path))
 	return parsed.get("frames", {}) if parsed is Dictionary else {}
@@ -37,9 +69,12 @@ func _frame_rect(frames: Dictionary, name: String) -> Rect2:
 	return Rect2(frame.get("x", 0), frame.get("y", 0), frame.get("w", 1), frame.get("h", 1))
 
 func _atlas_texture(atlas: Texture2D, frames: Dictionary, name: String) -> AtlasTexture:
+	var key := "%d:%s" % [atlas.get_instance_id(), name]
+	if _tex_cache.has(key): return _tex_cache[key]
 	var region := AtlasTexture.new()
 	region.atlas = atlas
 	region.region = _frame_rect(frames, name)
+	_tex_cache[key] = region
 	return region
 
 func _grid_to_iso(gx: float, gy: float) -> Vector2:
@@ -136,21 +171,25 @@ func _add_rover() -> void:
 func _add_label(text_value: String, pos: Vector2, depth: int, color: Color) -> void:
 	var label := Label.new()
 	label.text = text_value
-	label.position = pos + Vector2(-56, -8)
+	label.custom_minimum_size.x = 320
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.position = pos + Vector2(-160, -10)
 	label.z_index = depth
-	label.add_theme_font_size_override("font_size", 10)
+	label.add_theme_font_size_override("font_size", 26)   # was 10
 	label.add_theme_color_override("font_color", color)
 	label.add_theme_color_override("font_shadow_color", Color("101827"))
-	label.add_theme_constant_override("shadow_offset_x", 1)
-	label.add_theme_constant_override("shadow_offset_y", 1)
+	label.add_theme_constant_override("shadow_offset_x", 2)
+	label.add_theme_constant_override("shadow_offset_y", 2)
+	label.add_to_group("world_labels")
 	add_child(label)
+
 
 func _setup_camera() -> void:
 	camera = Camera2D.new()
 	camera.name = "Colony Camera"
 	add_child(camera)
 	camera.position = _grid_to_iso(HAB.x, HAB.y)
-	camera.zoom = Vector2(0.16, 0.16)
+	camera.zoom = Vector2(0.6, 0.6)
 	camera.make_current()
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -166,3 +205,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		var delta: Vector2 = event.position - drag_origin
 		camera.position -= delta / camera.zoom.x
 		drag_origin = event.position
+		
+func _process(_delta: float) -> void:
+	var readable := camera.zoom.x >= 0.35
+	for l in get_tree().get_nodes_in_group("world_labels"):
+		l.visible = readable

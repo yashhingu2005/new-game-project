@@ -27,6 +27,32 @@ static func capabilities(rover_class: String) -> Dictionary:
 static func can_collect_sample(rover: Dictionary, terrain_kind: String) -> bool:
 	return bool(capabilities(str(rover.get("class", ""))).get("sample", false)) and TERRAIN_SAMPLES.has(terrain_kind)
 
+static func dispatch_preview(rover: Dictionary, destination: Vector2i, terrain_kind: String, tuning: Dictionary = {}) -> Dictionary:
+	if bool(rover.get("stuck", false)):
+		return {"valid": false, "reason": "Nomad-1 is stuck. Recover it first."}
+	if str(rover.get("status", "ready")) in ["dispatched", "traveling"]:
+		return {"valid": false, "reason": "Nomad-1 is already on a trip."}
+	if destination.x < 0 or destination.y < 0 or destination.x >= 64 or destination.y >= 64:
+		return {"valid": false, "reason": "outside the map"}
+	var origin: Vector2i = rover.get("tile", Vector2i.ZERO)
+	var distance := Vector2(origin).distance_to(Vector2(destination))
+	if distance <= 0.0:
+		return {"valid": false, "reason": "choose a different tile"}
+	var max_range := float(rover.get("range", capabilities(str(rover.get("class", ""))).get("range", 0)))
+	if distance > max_range:
+		return {"valid": false, "reason": "outside Nomad-1's range"}
+	if not can_collect_sample(rover, terrain_kind):
+		return {"valid": false, "reason": "no sample site here"}
+	var t: Dictionary = tuning if not tuning.is_empty() else Tuning.preset()
+	var energy := ceilf(distance * float(t.get("rover_charge_per_tile", 0.5)))
+	if float(rover.get("charge", 0.0)) < energy:
+		return {"valid": false, "reason": "Nomad-1 needs more rover battery"}
+	var charge_after_trip := float(rover.get("charge", 0.0)) - energy
+	var return_risk := charge_after_trip < energy
+	return {"valid": true, "reason": "sample site in range", "distance": distance, "rover_charge": energy,
+		"sample": str(TERRAIN_SAMPLES[terrain_kind]), "may_get_stuck": return_risk,
+		"charge_after_trip": charge_after_trip}
+
 static func collect_sample(state: State, rover_id: String, terrain_kind: String) -> Dictionary:
 	for rover: Dictionary in state.rovers:
 		if str(rover.get("id", "")) != rover_id: continue

@@ -72,14 +72,14 @@ static func create_default(tuning: Dictionary = {}):
 	var state = load("res://simulation/mission_state.gd").new()
 	state.mission_seed = 88421
 	state.hazard_schedule = Hazards.schedule_for_seed(state.mission_seed)
-	state.rovers.assign([{"id": "Nomad-1", "class": "spirit", "tile": Vector2i(40, 38), "charge": 40.0,
+	state.rovers.assign([{"id": "Nomad-1", "class": "spirit", "tile": Vector2i(34, 31), "charge": 40.0,
 		"capacity": 50.0, "status": "ready", "stuck": false, "range": 18, "cargo_samples": [], "bulk_tonnes": 0.0}])
-	state.solar_arrays.assign([{"id": 1, "tile": Vector2i(28, 33), "count": 4, "dust": 0.0}])
+	state.solar_arrays.assign([{"id": 1, "tile": Vector2i(28, 33), "count": 5, "dust": 0.0}])
 	var capacity: float = float(t["battery_capacity"])
-	state.batteries.assign([{"id": 1, "tile": Vector2i(28, 34), "capacity": capacity, "charge": capacity * 0.75}])
+	state.batteries.assign([{"id": 1, "tile": Vector2i(28, 34), "capacity": capacity, "charge": 135.0 if is_equal_approx(capacity, 180.0) else capacity * 0.75}])
 	var tiers: Dictionary = t["pole_tiers"]
 	var starter_pole: Dictionary = tiers[2]
-	state.poles.assign([{"id": 1, "tile": Vector2i(32, 32), "radius": starter_pole.radius, "capacity": starter_pole.capacity, "standby": starter_pole.standby, "tier": 2, "on": true, "tripped": false}])
+	state.poles.assign([{"id": 1, "tile": Vector2i(32, 31), "radius": starter_pole.radius, "capacity": starter_pole.capacity, "standby": starter_pole.standby, "tier": 2, "on": true, "tripped": false}])
 	state.buildings.assign([
 		_building("habitat", Vector2i(32, 32), 1.5, "high", true, 0.8, true, true, 3.0),
 		_building("airlock", Vector2i(33, 32), 0.2, "high", true, 0.2, false, true, 1.0),

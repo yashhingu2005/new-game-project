@@ -9,13 +9,27 @@ const GAME := {
 	"solar_peak_per_panel": 6.0, # Placeholder game power units/panel/hour.
 	"dust_per_sol": 0.03, # Exaggerated gameplay rate; real observed rates are much lower.
 	"storm_light_factor": 0.35, # Placeholder.
-	"battery_capacity": 120.0, # Placeholder game power units per battery.
+	"battery_capacity": 180.0, # Placeholder game power units per battery.
 	"battery_tech_bonus": 45.0, # Placeholder.
 	"charge_efficiency": 0.9, # Placeholder.
 	"discharge_efficiency": 0.9, # Placeholder.
 	"reserve_fraction": 0.2, # Placeholder reserve threshold for gameplay.
 	"dose_warning_limit_msv": 100.0, # Placeholder game warning line, not a crew medical limit.
 	"dose_per_sol_msv": 3.0, # Exaggerated play rate; about 0.67 mSv/day was reported by Curiosity RAD. Source: https://www.nasa.gov/news-release/nasa-rover-results-include-first-age-measurement-on-mars-and-help-for-human-exploration/
+	"air_per_sol": 0.15, # Placeholder air consumption per Sol.
+	"water_per_sol": 0.2, # Placeholder water consumption per Sol.
+	"food_per_sol": 0.18, # Placeholder food consumption per Sol.
+	"greenhouse_food_per_sol": 0.12, # Placeholder greenhouse production per Sol.
+	"oxygen_generator_air_per_sol": 0.12, # Placeholder oxygen production per Sol.
+	"water_recycler_water_per_sol": 0.16, # Placeholder recycled water per Sol.
+	"workshop_materials_per_sol": 2.0, # Placeholder workshop production per Sol.
+	"rover_charge_per_tile": 0.5, # Placeholder Nomad-1 battery units used per tile travelled.
+	"store_warning_fraction": 0.25, # Placeholder low-store warning point.
+	"air_capacity": 3.0, # Placeholder air store capacity for warning display.
+	"water_capacity": 4.0, # Placeholder water store capacity for warning display.
+	"food_capacity": 3.6, # Placeholder food store capacity for warning display.
+	"cargo_materials": 20.0, # Placeholder Sol 14 cargo materials.
+	"cargo_earth_parts": 3.0, # Placeholder Sol 14 cargo Earth parts.
 	"heater_load": 0.8, # Placeholder power units/module/hour.
 	"line_loss_per_hop": 0.04, # Placeholder.
 	"insulation_reduction_per_level": 0.15, # Placeholder.
@@ -38,6 +52,7 @@ const GAME := {
 		"rover_emergency_recharge": {"power": 15.0}, # Placeholder shared-grid recharge draw.
 		"repair_building": {"crew_hours": 3.0, "materials": 2.0}, # Placeholder action cost.
 		"upgrade_building": {"crew_hours": 4.0, "materials": 10.0, "earth_parts": 1.0}, # Placeholder action cost.
+		"toggle_work": {"crew_hours": 0.25}, # Placeholder action cost.
 	},
 	"building_costs": {
 		"solar_array": {"crew_hours": 3.0, "materials": 10.0, "earth_parts": 1.0}, # Placeholder build cost.
@@ -59,6 +74,7 @@ const REAL := {
 	"mars_sol_earth_hours": 24.660, # Mars mean solar day is 24 h 39 m 35.244 s. Source: https://www.giss.nasa.gov/tools/mars24/help/notes.html
 	"day_fraction": 0.5, # UNVERIFIED placeholder average; daylight varies by season and latitude.
 	"solar_peak_per_panel": 0.177, # UNVERIFIED: illustrative kW per panel; must be replaced by sourced hardware assumptions.
+	"load_scale": 0.0295, # Placeholder: scale gameplay loads to match the REAL panel power unit.
 	"dust_per_sol": 0.002, # UNVERIFIED placeholder: mission dust rates vary and need a cited dataset.
 	"storm_light_factor": 0.1, # Placeholder: storm opacity varies widely.
 	"battery_capacity": 100.0, # Placeholder kWh per battery unit.
@@ -68,6 +84,20 @@ const REAL := {
 	"reserve_fraction": 0.2, # Placeholder battery reserve threshold.
 	"dose_warning_limit_msv": 100.0, # Placeholder warning line; no medical limit is implied.
 	"dose_per_sol_msv": 0.67, # Curiosity RAD average at Gale Crater for Aug 2012–Jun 2013, not a Jezero forecast. Source: https://www.nasa.gov/news-release/nasa-rover-results-include-first-age-measurement-on-mars-and-help-for-human-exploration/
+	"air_per_sol": GAME.air_per_sol, # Placeholder resource drain reused from the game preset.
+	"water_per_sol": GAME.water_per_sol, # Placeholder resource drain reused from the game preset.
+	"food_per_sol": GAME.food_per_sol, # Placeholder resource drain reused from the game preset.
+	"greenhouse_food_per_sol": GAME.greenhouse_food_per_sol, # Placeholder production reused from the game preset.
+	"oxygen_generator_air_per_sol": GAME.oxygen_generator_air_per_sol, # Placeholder production reused from the game preset.
+	"water_recycler_water_per_sol": GAME.water_recycler_water_per_sol, # Placeholder production reused from the game preset.
+	"workshop_materials_per_sol": GAME.workshop_materials_per_sol, # Placeholder production reused from the game preset.
+	"rover_charge_per_tile": GAME.rover_charge_per_tile, # Placeholder rover travel rate reused from the game preset.
+	"store_warning_fraction": GAME.store_warning_fraction, # Placeholder warning reused from the game preset.
+	"air_capacity": GAME.air_capacity, # Placeholder capacity reused from the game preset.
+	"water_capacity": GAME.water_capacity, # Placeholder capacity reused from the game preset.
+	"food_capacity": GAME.food_capacity, # Placeholder capacity reused from the game preset.
+	"cargo_materials": GAME.cargo_materials, # Placeholder cargo reused from the game preset.
+	"cargo_earth_parts": GAME.cargo_earth_parts, # Placeholder cargo reused from the game preset.
 	"heater_load": 2.0, # Placeholder kW per module.
 	"line_loss_per_hop": 0.01, # Placeholder.
 	"insulation_reduction_per_level": 0.15, # Placeholder.

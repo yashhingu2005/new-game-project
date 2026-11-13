@@ -1,11 +1,11 @@
-[gd_scene load_steps=3 format=3 uid="uid://cdwl3dhdpju7c"]
+[gd_scene format=3 uid="uid://cdwl3dhdpju7c"]
 
 [ext_resource type="Script" uid="uid://dywseog36d74k" path="res://World.gd" id="1_world"]
-[ext_resource type="Script" path="res://simulation/world_power_ui.gd" id="2_power_ui"]
+[ext_resource type="Script" uid="uid://d0ykndrlfvqn" path="res://simulation/world_power_ui.gd" id="2_power_ui"]
 
 [node name="OutpostZero" type="Node2D" unique_id=10572911]
 script = ExtResource("1_world")
 
-[node name="Power Grid Planning UI" type="Node2D" parent="."]
+[node name="Power Grid Planning UI" type="Node2D" parent="." unique_id=245494411]
 z_index = 180
 script = ExtResource("2_power_ui")

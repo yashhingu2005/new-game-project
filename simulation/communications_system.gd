@@ -3,6 +3,7 @@ extends RefCounted
 
 const State = preload("res://simulation/mission_state.gd")
 const Grid = preload("res://simulation/power_grid.gd")
+const Tuning = preload("res://simulation/tuning.gd")
 
 const REQUEST_CUTOFF_SOL := 5 # Story schedule placeholder.
 const CARGO_ARRIVAL_SOL := 14 # Story schedule placeholder.
@@ -56,6 +57,12 @@ static func process_sol(state: State) -> Array[Dictionary]:
 	if state.sol >= CARGO_ARRIVAL_SOL and not bool(comms.get("cargo_landed", false)):
 		comms["cargo_landed"] = true
 		comms["landed_sol"] = state.sol
+		var tuning: Dictionary = Tuning.preset()
+		var materials := float(tuning["cargo_materials"])
+		var earth_parts := float(tuning["cargo_earth_parts"])
+		state.materials += materials
+		state.earth_parts += earth_parts
+		delivered.append({"cause": "cargo_landing", "detail": "Cargo landed: +%.0f materials and +%.0f Earth parts." % [materials, earth_parts]})
 	return delivered
 
 static func cargo_manifest(state: State) -> Array[String]:

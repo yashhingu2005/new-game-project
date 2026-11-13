@@ -49,8 +49,17 @@ func _run_tests() -> void:
 	_test_handover_uses_decision_ledger_and_retry_seed()
 	_test_data_sources_are_labeled_and_cited()
 	_test_badges_and_generated_patch()
+	_test_default_start_and_first_night()
+	_test_cleaning_prevents_reserve_breaches()
+	_test_dust_causes_reserve_breach_without_cleaning()
+	_test_toggle_work_night_and_midnight()
+	_test_habitat_work_toggle_is_noop()
+	_test_store_failure_state()
+	_test_production_requires_power_and_work()
+	_test_zero_cost_story_choice_is_recorded()
+	_test_rover_dispatch_preview_and_action()
 	if failures == 0:
-		print("PASS: 31 Godot simulation tests")
+		print("PASS: 40 Godot simulation tests")
 	else:
 		push_error("FAIL: %d Godot simulation test(s)" % failures)
 	await get_tree().create_timer(15.0).timeout
@@ -422,9 +431,132 @@ func _test_comms_replies_stale_advice_and_cargo_arrival() -> void:
 	Communications.process_sol(state)
 	_check(bool(state.flags["communications"]["inbox"][0]["stale"]), "Unread advice becomes visibly stale after conditions have time to change")
 	state.sol = Communications.CARGO_ARRIVAL_SOL
+	var materials_before := state.materials
+	var parts_before := state.earth_parts
 	Communications.process_sol(state)
 	_check(bool(state.flags["communications"]["cargo_landed"]), "Scheduled cargo lands around Sol 14")
+	_check(is_equal_approx(state.materials, materials_before + 20.0) and is_equal_approx(state.earth_parts, parts_before + 3.0), "Cargo landing replenishes building materials and Earth parts")
 	_check(Communications.cargo_manifest(state).size() <= 4, "Cargo manifest has a fixed limited slot count")
+
+func _test_default_start_and_first_night() -> void:
+	var tuning: Dictionary = Tuning.preset()
+	var state: State = State.create_default(tuning)
+	_check(int(state.solar_arrays[0]["count"]) == 5, "Default solar array starts with five panels")
+	_check(is_equal_approx(float(state.batteries[0]["capacity"]), 180.0) and is_equal_approx(float(state.batteries[0]["charge"]), 135.0), "Default battery starts at 135 of 180 power units")
+	var rng := RandomNumberGenerator.new()
+	rng.seed = state.mission_seed
+	var reserve_breach := false
+	var clear_weather := {"storm_light_factor": 1.0, "dust_per_sol": 0.0, "dust_devil_clean": 0.0}
+	for _hour in 24:
+		var result: Dictionary = Grid.tick(state, [], rng, clear_weather, tuning)
+		reserve_breach = reserve_breach or bool(result["reserve_hit"])
+		state = result["state"]
+	_check(not reserve_breach, "Default start survives its first night without a reserve breach")
+
+func _test_cleaning_prevents_reserve_breaches() -> void:
+	var tuning: Dictionary = Tuning.preset()
+	var state: State = State.create_default(tuning)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 5501
+	var reserve_breach := false
+	var clear_weather := {"storm_light_factor": 1.0, "dust_per_sol": 0.03, "dust_devil_clean": 0.0}
+	for _hour in 720:
+		var actions: Array[Dictionary] = []
+		if state.hour == 6 and state.sol > 1 and posmod(state.sol, 3) == 0:
+			actions.append(Grid.action("clean_panels", null, tuning))
+		var result: Dictionary = Grid.tick(state, actions, rng, clear_weather, tuning)
+		reserve_breach = reserve_breach or bool(result["reserve_hit"])
+		state = result["state"]
+	_check(not reserve_breach, "Cleaning panels every three Sols prevents reserve breaches across 30 clear Sols")
+
+func _test_dust_causes_reserve_breach_without_cleaning() -> void:
+	var tuning: Dictionary = Tuning.preset()
+	var state: State = State.create_default(tuning)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 5501
+	var reserve_breach := false
+	var clear_weather := {"storm_light_factor": 1.0, "dust_per_sol": 0.03, "dust_devil_clean": 0.0}
+	for _hour in 720:
+		var result: Dictionary = Grid.tick(state, [], rng, clear_weather, tuning)
+		reserve_breach = reserve_breach or bool(result["reserve_hit"])
+		state = result["state"]
+	_check(reserve_breach, "Uncleaned panel dust causes at least one reserve breach across 30 clear Sols")
+
+func _test_toggle_work_night_and_midnight() -> void:
+	var tuning: Dictionary = Tuning.preset()
+	var state := _empty_state()
+	state.hour = 19
+	var lab := _building("lab", Vector2i.ZERO, 2.0)
+	lab["heater_load"] = 0.5
+	state.buildings.assign([lab])
+	var demand_before := float(Grid.compute_grid(state, tuning)["total_demand"])
+	var toggled: Dictionary = Grid.tick(state, [Grid.action("toggle_work", "lab", tuning)], null, {"storm_light_factor": 1.0}, tuning)
+	var next: State = toggled["state"]
+	_check(float(Grid.compute_grid(next, tuning)["total_demand"]) < demand_before, "Switching off a lab lowers night demand while its heater stays on")
+	for _hour in 8:
+		var result: Dictionary = Grid.tick(next, [], null, {"storm_light_factor": 1.0}, tuning)
+		next = result["state"]
+	_check(not bool(next.buildings[0]["work_enabled"]) and bool(next.buildings[0]["manual_off"]), "A manual work shutdown survives the midnight rollover")
+
+func _test_habitat_work_toggle_is_noop() -> void:
+	var state := _empty_state()
+	var habitat := _building("habitat", Vector2i.ZERO, 1.0, "high", true)
+	state.buildings.assign([habitat])
+	var result: Dictionary = Grid.apply_action(state, Grid.action("toggle_work", "habitat"))
+	_check(bool(result["state"].buildings[0]["work_enabled"]), "Habitat work cannot be toggled off")
+
+func _test_store_failure_state() -> void:
+	var state := _empty_state()
+	state.air = 0.001
+	state.buildings.assign([])
+	var result: Dictionary = Grid.tick(state, [], null, {"storm_light_factor": 1.0})
+	_check(bool(result["state"].flags.get("mission_failed", false)) and str(result["state"].flags.get("failure_cause", "")) == "air", "A store reaching zero records a mission failure and its cause")
+
+func _test_production_requires_power_and_work() -> void:
+	var powered := _empty_state()
+	powered.food = 1.0
+	var greenhouse := _building("greenhouse", Vector2i.ZERO, 0.1)
+	greenhouse["heater_load"] = 0.0
+	powered.buildings.assign([greenhouse])
+	var powered_result: Dictionary = Grid.tick(powered, [], null, {"storm_light_factor": 1.0}, Tuning.preset())
+	var powered_food := float(powered_result["state"].food)
+	var unpowered := _empty_state()
+	unpowered.food = 1.0
+	unpowered.poles.assign([])
+	unpowered.buildings.assign([greenhouse.duplicate(true)])
+	var unpowered_result: Dictionary = Grid.tick(unpowered, [], null, {"storm_light_factor": 1.0}, Tuning.preset())
+	var disabled := _empty_state()
+	disabled.food = 1.0
+	var disabled_greenhouse := greenhouse.duplicate(true)
+	disabled_greenhouse["work_enabled"] = false
+	disabled.buildings.assign([disabled_greenhouse])
+	var disabled_result: Dictionary = Grid.tick(disabled, [], null, {"storm_light_factor": 1.0}, Tuning.preset())
+	_check(powered_food > float(unpowered_result["state"].food), "Powered and enabled greenhouse produces food")
+	_check(is_equal_approx(float(unpowered_result["state"].food), float(disabled_result["state"].food)), "Unpowered or disabled greenhouse does not produce food")
+
+func _test_zero_cost_story_choice_is_recorded() -> void:
+	var state := _empty_state()
+	var action_data := {"type": "event_choice", "choice_id": "skip", "option": "Keep the current plan", "effects": {}, "cost": {}}
+	var result: Dictionary = Grid.apply_action(state, action_data)
+	_check(bool(result["ok"]), "A no-cost story fallback can be applied through the action system")
+	_check(result["state"].decision_ledger.size() == 1 and str(result["state"].decision_ledger[0]["option"]) == "Keep the current plan", "A no-cost story fallback appears in the handover ledger")
+
+func _test_rover_dispatch_preview_and_action() -> void:
+	var tuning: Dictionary = Tuning.preset()
+	var state: State = State.create_default(tuning)
+	var rover: Dictionary = state.rovers[0]
+	var destination := Vector2i(36, 31)
+	var preview: Dictionary = Rovers.dispatch_preview(rover, destination, "geological_outcrop", tuning)
+	_check(bool(preview["valid"]) and is_equal_approx(float(preview["rover_charge"]), 1.0), "Rover dispatch preview checks sample sites, range, and charge")
+	_check(not bool(Rovers.dispatch_preview(rover, Vector2i(63, 63), "geological_outcrop", tuning)["valid"]), "Rover dispatch preview rejects destinations beyond range")
+	_check(not bool(Rovers.dispatch_preview(rover, destination, "rocky_plains", tuning)["valid"]), "Rover dispatch preview only accepts known sample sites")
+	var low_charge_rover: Dictionary = rover.duplicate(true)
+	low_charge_rover["charge"] = 15.0
+	var risky_trip: Dictionary = Rovers.dispatch_preview(low_charge_rover, Vector2i(52, 31), "geological_outcrop", tuning)
+	_check(bool(risky_trip["valid"]) and bool(risky_trip["may_get_stuck"]), "Rover preview warns when its charge cannot cover the return trip")
+	var action_data: Dictionary = Rovers.dispatch_action(str(rover["id"]), destination, tuning)
+	var result: Dictionary = Grid.apply_action(state, action_data)
+	_check(bool(result["ok"]) and str(result["state"].rovers[0]["status"]) == "dispatched", "Dispatch action spends its tuned cost and records the rover destination")
 
 func _test_story_chapter_windows_and_dilemmas() -> void:
 	_check(Story.chapter_for_sol(1)["id"] == "landing" and Story.chapter_for_sol(4)["id"] == "landing", "Landing chapter covers Sols 1 through 4")
